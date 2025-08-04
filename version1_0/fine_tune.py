@@ -26,9 +26,9 @@ else:
 # Configuration
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 DATASET_NAME = "seyyedaliayati/solidity-defi-vulnerabilities"
-OUTPUT_DIR = "./qwen-solidity-vulnerabilities"
+OUTPUT_DIR = "./version1_0/qwen-solidity-vulnerabilities"
 # Reduced from 512 for memory safety
-MAX_SEQ_LENGTH = 256
+MAX_SEQ_LENGTH = 384
 # Reduced from 2 for 4GB VRAM
 BATCH_SIZE = 1
 EPOCHS = 3
@@ -216,20 +216,113 @@ model.eval()
 
 # Test with a sample Solidity code
 test_code = """
-contract VulnerableContract {
-    mapping(address => uint256) public balances;
+pragma solidity ^0.8.0;
+
+interface IERC20 {
+    function balanceOf(address account) external view returns (uint256);
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+
+interface IUniswapV2Pair {
+    function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);
+    function token0() external view returns (address);
+    function token1() external view returns (address);
+}
+
+contract VulnerableYieldFarm {
+    IERC20 public rewardToken;
+    IERC20 public stakingToken;
+    IUniswapV2Pair public pricePair;
     
-    function withdraw(uint256 amount) public {
-        require(balances[msg.sender] >= amount);
-        
-        (bool success, ) = msg.sender.call{value: amount}("");
-        require(success);
-        
-        balances[msg.sender] -= amount;
+    mapping(address => uint256) public stakedBalance;
+    mapping(address => uint256) public lastRewardTime;
+    
+    uint256 public rewardRate = 100; // 100 tokens per second per staked token
+    uint256 public totalStaked;
+    
+    constructor(address _rewardToken, address _stakingToken, address _pricePair) {
+        rewardToken = IERC20(_rewardToken);
+        stakingToken = IERC20(_stakingToken);
+        pricePair = IUniswapV2Pair(_pricePair);
     }
     
-    function deposit() public payable {
-        balances[msg.sender] += msg.value;
+    function stake(uint256 amount) external {
+        require(amount > 0, "Cannot stake 0");
+        
+        stakingToken.transferFrom(msg.sender, address(this), amount);
+        
+        if (stakedBalance[msg.sender] > 0) {
+            claimRewards();
+        }
+        
+        stakedBalance[msg.sender] += amount;
+        totalStaked += amount;
+        lastRewardTime[msg.sender] = block.timestamp;
+    }
+    
+    function unstake(uint256 amount) external {
+        require(stakedBalance[msg.sender] >= amount, "Insufficient staked balance");
+        
+        claimRewards();
+        
+        stakedBalance[msg.sender] -= amount;
+        totalStaked -= amount;
+        stakingToken.transfer(msg.sender, amount);
+        lastRewardTime[msg.sender] = block.timestamp;
+    }
+    
+    function claimRewards() public {
+        uint256 reward = calculateReward(msg.sender);
+        if (reward > 0) {
+            lastRewardTime[msg.sender] = block.timestamp;
+            rewardToken.transfer(msg.sender, reward);
+        }
+    }
+    
+    function calculateReward(address user) public view returns (uint256) {
+        if (stakedBalance[user] == 0) return 0;
+        
+        uint256 timeStaked = block.timestamp - lastRewardTime[user];
+        uint256 baseReward = stakedBalance[user] * timeStaked * rewardRate;
+        
+        // VULNERABILITY: Using spot price from DEX for reward calculation
+        uint256 multiplier = getPriceMultiplier();
+        
+        return baseReward * multiplier / 1000;
+    }
+    
+    function getPriceMultiplier() public view returns (uint256) {
+        (uint112 reserve0, uint112 reserve1,) = pricePair.getReserves();
+        
+        // VULNERABILITY: Direct use of reserves without TWAP or oracle
+        // This can be manipulated with flash loans
+        uint256 price;
+        if (pricePair.token0() == address(stakingToken)) {
+            price = (reserve1 * 1e18) / reserve0;
+        } else {
+            price = (reserve0 * 1e18) / reserve1;
+        }
+        
+        // Higher price = higher multiplier (up to 5x)
+        if (price > 2e18) return 5000; // 5x multiplier
+        if (price > 1.5e18) return 3000; // 3x multiplier
+        if (price > 1e18) return 2000; // 2x multiplier
+        return 1000; // 1x multiplier (base case)
+    }
+    
+    function emergencyWithdraw() external {
+        uint256 amount = stakedBalance[msg.sender];
+        require(amount > 0, "No staked balance");
+        
+        stakedBalance[msg.sender] = 0;
+        totalStaked -= amount;
+        stakingToken.transfer(msg.sender, amount);
+    }
+    
+    function updateRewardRate(uint256 newRate) external {
+        // VULNERABILITY: No access control
+        rewardRate = newRate;
     }
 }
 """
@@ -251,7 +344,7 @@ with torch.no_grad():
     outputs = model.generate(
         **inputs,
         max_new_tokens=256,
-        temperature=0.7,
+        temperature=0.5,
         do_sample=True,
         top_p=0.9,
         pad_token_id=tokenizer.eos_token_id

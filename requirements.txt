@@ -3,3 +3,7 @@ datasets
 peft
 huggingface_hub
 python-dotenv
+bitsandbytes
+torch
+accelerate
+tensorboard
