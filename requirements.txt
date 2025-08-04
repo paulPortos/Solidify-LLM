@@ -1,0 +1,5 @@
+transformers
+datasets
+peft
+huggingface_hub
+python-dotenv
