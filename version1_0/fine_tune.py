@@ -1,17 +1,18 @@
 import torch
 import gc
+import os
 from transformers import (
     AutoTokenizer, 
-    AutoModelForCausalLM
+    AutoModelForCausalLM,
 )
 from transformers.training_args import TrainingArguments
 from transformers.trainer import Trainer
 from transformers.utils.quantization_config import BitsAndBytesConfig
+from transformers.data.data_collator import DataCollatorForLanguageModeling
 from datasets import load_dataset
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, PeftModel
 from huggingface_hub import login
 from dotenv import load_dotenv
-import os
 
 # Load environment variables and authenticate
 load_dotenv()
@@ -26,8 +27,10 @@ else:
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
 DATASET_NAME = "seyyedaliayati/solidity-defi-vulnerabilities"
 OUTPUT_DIR = "./qwen-solidity-vulnerabilities"
-MAX_SEQ_LENGTH = 256  # Reduced from 512 for memory safety
-BATCH_SIZE = 1  # Reduced from 2 for 4GB VRAM
+# Reduced from 512 for memory safety
+MAX_SEQ_LENGTH = 256
+# Reduced from 2 for 4GB VRAM
+BATCH_SIZE = 1
 EPOCHS = 3
 LEARNING_RATE = 2e-4
 
@@ -57,10 +60,10 @@ print("Preparing model for k-bit training...")
 model = prepare_model_for_kbit_training(model)
 
 print("Setting up LoRA config...")
-# LoRA configuration
+# LoRA configuration with rank, alpha scaling, target modules, dropout, bias and task type
 lora_config = LoraConfig(
-    r=16,  # rank
-    lora_alpha=32,  # alpha scaling
+    r=16,
+    lora_alpha=32,
     target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
     lora_dropout=0.1,
     bias="none",
@@ -82,6 +85,7 @@ def format_prompt(example):
     code = example.get('testcase', '')
     description = example.get('attack_explain', '')
     title = example.get('title', '')
+    
     # Create instruction prompt
     instruction = f"Analyze this Solidity code for vulnerabilities:\n\n{code}\n\nIdentify any security vulnerabilities present."
     
@@ -137,7 +141,8 @@ training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
-    gradient_accumulation_steps=8,  # Increased to maintain effective batch size of 8
+    # Increased to maintain effective batch size of 8
+    gradient_accumulation_steps=8,
     optim="paged_adamw_8bit",
     save_steps=500,
     logging_steps=25,
@@ -152,13 +157,12 @@ training_args = TrainingArguments(
     lr_scheduler_type="constant",
     report_to="tensorboard",
     save_total_limit=3,
-    load_best_model_at_end=False,  # Fixed: Disabled since we don't have eval dataset
-    # Removed metric_for_best_model and greater_is_better since we're not using evaluation
+    # Fixed: Disabled since we don't have eval dataset
+    load_best_model_at_end=False,
 )
 
 print("Setting up trainer...")
 # Data collator for language modeling
-from transformers.data.data_collator import DataCollatorForLanguageModeling
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
     mlm=False,
@@ -198,8 +202,6 @@ torch.cuda.empty_cache()
 gc.collect()
 
 # Load the fine-tuned model for testing
-from peft import PeftModel
-
 print("Loading base model for testing...")
 base_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
