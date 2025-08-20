@@ -26,7 +26,7 @@ else:
 # Configuration
 MODEL_NAME = "Qwen/Qwen2.5-Coder-0.5B"
 DATASET_NAME = "greatestyapper/solidity_iio"
-OUTPUT_DIR = "./version1_0/qwen-solidity-vulnerabilities"
+OUTPUT_DIR = "./version3_0/qwen-solidity-vulnerabilities"
 MAX_SEQ_LENGTH = 896
 BATCH_SIZE = 2
 EPOCHS = 15
