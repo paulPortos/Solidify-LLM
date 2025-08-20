@@ -27,11 +27,9 @@ else:
 MODEL_NAME = "Qwen/Qwen2.5-Coder-0.5B"
 DATASET_NAME = "greatestyapper/solidity_iio"
 OUTPUT_DIR = "./version1_0/qwen-solidity-vulnerabilities"
-# Reduced from 512 for memory safety
-MAX_SEQ_LENGTH = 512
-# Reduced from 2 for 4GB VRAM
+MAX_SEQ_LENGTH = 896
 BATCH_SIZE = 2
-EPOCHS = 5
+EPOCHS = 15
 LEARNING_RATE = 2e-4
 
 print("Setting up 4-bit quantization config...")
@@ -62,10 +60,10 @@ model = prepare_model_for_kbit_training(model)
 print("Setting up LoRA config...")
 # LoRA configuration with rank, alpha scaling, target modules, dropout, bias and task type
 lora_config = LoraConfig(
-    r=16,
-    lora_alpha=32,
+    r=32,
+    lora_alpha=64,
     target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    lora_dropout=0.1,
+    lora_dropout=0.05,
     bias="none",
     task_type="CAUSAL_LM"
 )
@@ -81,21 +79,30 @@ print(f"Dataset loaded. Train samples: {len(dataset['train'])}") # type: ignore
 
 def format_prompt(example):
     """Format the dataset into instruction-response format"""
-    vulnerability = example.get('attack_title', '')
-    code = example.get('testcase', '')
-    description = example.get('attack_explain', '')
-    title = example.get('title', '')
+    instruction = example.get('instruction', '').strip()
+    input_code = example.get('input', '').strip()
+    expected_output = example.get('output', '').strip()
     
-    # Create instruction prompt
-    instruction = f"Analyze this Solidity code for vulnerabilities:\n\n{code}\n\nIdentify any security vulnerabilities present."
+   # Create a comprehensive instruction
+    if input_code:
+        # If there's separate input code, combine instruction with code
+        full_instruction = f"{instruction}\n\n```solidity\n{input_code}\n```"
+    else:
+        # If instruction contains the code, use as is
+        full_instruction = instruction
     
-    # Create response
-    response = f"Vulnerability: {vulnerability}\n\nTarget: {title}\n\nDescription: {description}"
+    # Ensure we have meaningful content
+    if not instruction and not input_code:
+        # Fallback for malformed examples
+        full_instruction = "Analyze this Solidity code for security vulnerabilities."
+    
+    if not expected_output:
+        expected_output = "No specific vulnerabilities identified in this code."
     
     # Format as chat template
     messages = [
-        {"role": "user", "content": instruction},
-        {"role": "assistant", "content": response}
+        {"role": "user", "content": full_instruction},
+        {"role": "assistant", "content": expected_output}
     ]
     
     return {"messages": messages}
@@ -152,7 +159,7 @@ training_args = TrainingArguments(
     bf16=False,
     max_grad_norm=0.3,
     max_steps=-1,
-    warmup_ratio=0.03,
+    warmup_ratio=0.08,
     group_by_length=True,
     lr_scheduler_type="constant",
     report_to="tensorboard",
