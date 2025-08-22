@@ -149,7 +149,7 @@ training_args = TrainingArguments(
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
     # Increased to maintain effective batch size of 8
-    gradient_accumulation_steps=8,
+    gradient_accumulation_steps=4,
     optim="paged_adamw_8bit",
     save_steps=450,
     logging_steps=25,
