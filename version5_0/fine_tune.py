@@ -14,7 +14,6 @@ from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, Pe
 from huggingface_hub import login
 from dotenv import load_dotenv
 
-# Load environment variables and authenticate
 load_dotenv()
 hf_token = os.getenv('HUGGINGFACE_API_KEY')
 if hf_token:
@@ -25,11 +24,11 @@ else:
 
 MODEL_NAME = "Qwen/Qwen2.5-Coder-0.5B"
 DATASET_NAME = "greatestyapper/solidity_iio"
-OUTPUT_DIR = "./version3_0/qwen-solidity-vulnerabilities"  
-MAX_SEQ_LENGTH = 640        
-BATCH_SIZE = 1              
-EPOCHS = 7                 
-LEARNING_RATE = 1e-4        
+OUTPUT_DIR = "./version5_0/qwen-solidity-vulnerabilities"
+MAX_SEQ_LENGTH = 512
+BATCH_SIZE = 1
+EPOCHS = 10
+LEARNING_RATE = 1e-4
 
 print("Setting up 4-bit quantization config...")
 bnb_config = BitsAndBytesConfig(
@@ -56,12 +55,12 @@ print("Preparing model for k-bit training...")
 model = prepare_model_for_kbit_training(model)
 
 print("Setting up LoRA config...")
-# Reduced LoRA config for 4GB VRAM
+# LoRA configuration with rank, alpha scaling, target modules, dropout, bias and task type
 lora_config = LoraConfig(
-    r=16,                   # Reduced from 32 for memory
-    lora_alpha=32,          # Reduced proportionally
+    r=16,
+    lora_alpha=32,
     target_modules=["q_proj", "v_proj", "k_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-    lora_dropout=0.1,       # Increased for regularization
+    lora_dropout=0.05,
     bias="none",
     task_type="CAUSAL_LM"
 )
@@ -76,12 +75,12 @@ dataset = load_dataset(DATASET_NAME)
 print(f"Dataset loaded. Train samples: {len(dataset['train'])}") # type: ignore
 
 def format_prompt(example):
-    """Format the IIO dataset into instruction-response format"""
+    """Format the dataset into instruction-response format"""
     instruction = example.get('instruction', '').strip()
     input_code = example.get('input', '').strip()
     expected_output = example.get('output', '').strip()
     
-    # Create a comprehensive instruction
+   # Create a comprehensive instruction
     if input_code:
         # If there's separate input code, combine instruction with code
         full_instruction = f"{instruction}\n\n```solidity\n{input_code}\n```"
@@ -132,11 +131,6 @@ def tokenize_function(examples):
     return tokenized
 
 print("Formatting dataset...")
-# First, let's inspect the dataset structure
-print("Dataset columns:", dataset["train"].column_names) # type: ignore
-if len(dataset["train"]) > 0: # type: ignore
-    print("Sample example:", dataset["train"][0]) # type: ignore
-
 # Format and tokenize dataset
 formatted_dataset = dataset.map(format_prompt, remove_columns=dataset["train"].column_names) # type: ignore
 tokenized_dataset = formatted_dataset.map(
@@ -146,34 +140,32 @@ tokenized_dataset = formatted_dataset.map(
 )
 
 print("Setting up training arguments...")
-# Optimized training arguments for 4GB VRAM
+# Training arguments - Fixed evaluation strategy issue
 training_args = TrainingArguments(
     output_dir=OUTPUT_DIR,
     num_train_epochs=EPOCHS,
     per_device_train_batch_size=BATCH_SIZE,
-    gradient_accumulation_steps=16,     # Increased to maintain effective batch size
+    # Increased to maintain effective batch size of 8
+    gradient_accumulation_steps=8,
     optim="paged_adamw_8bit",
-    save_steps=250,                     # More frequent saves for monitoring
-    logging_steps=10,                   # More frequent logging
+    save_steps=450,
+    logging_steps=25,
     learning_rate=LEARNING_RATE,
-    weight_decay=0.01,                  # Increased regularization
-    fp16=True,                          # CRITICAL for 4GB VRAM - saves 30% memory
+    weight_decay=0.001,
+    fp16=True,
     bf16=False,
     max_grad_norm=0.3,
     max_steps=-1,
-    warmup_ratio=0.1,                   # Increased for stability
+    warmup_ratio=0.08,
     group_by_length=True,
-    lr_scheduler_type="cosine",         # Better convergence
+    lr_scheduler_type="constant",
     report_to="tensorboard",
-    save_total_limit=3,                 # Limit checkpoints for disk space
+    save_total_limit=3,
+    # Fixed: Disabled since we don't have eval dataset
     load_best_model_at_end=False,
-    dataloader_num_workers=0,           # Reduce CPU/RAM usage
-    dataloader_pin_memory=False,        # Reduce memory pressure
-    remove_unused_columns=True,         # Memory optimization
-    dataloader_drop_last=True,          # Avoid partial batches
 )
 
-print("Setting up trainer🦾🦾🦾...")
+print("Setting up trainer...")
 # Data collator for language modeling
 data_collator = DataCollatorForLanguageModeling(
     tokenizer=tokenizer,
@@ -189,14 +181,9 @@ trainer = Trainer(
     data_collator=data_collator,
 )
 
-print("Starting training🤗🤗🤗")
-print(f"Training for {EPOCHS} epochs with batch size {BATCH_SIZE}👌")
+print("Starting training...")
+print(f"Training for {EPOCHS} epochs with batch size {BATCH_SIZE}")
 print(f"Effective batch size: {BATCH_SIZE * training_args.gradient_accumulation_steps}")
-print(f"Total training samples: {len(tokenized_dataset['train'])}") # type: ignore
-
-# Memory management before training
-torch.cuda.empty_cache()
-gc.collect()
 
 # Start training
 trainer.train()
@@ -231,31 +218,47 @@ print("Loading fine-tuned LoRA weights...")
 model = PeftModel.from_pretrained(base_model, OUTPUT_DIR)
 model.eval()
 
-# Test with a sample Solidity code (truncated for 4GB VRAM)
+# Test with a sample Solidity code
 test_code = """
-pragma solidity ^0.8.0;
+pragma solidity ^0.6.0;
 
-contract VulnerableBank {
+contract VulnerableToken {
     mapping(address => uint256) public balances;
-    
-    function deposit() public payable {
-        balances[msg.sender] += msg.value;
+    uint256 public totalSupply;
+
+    function mint(address to, uint256 amount) public {
+        balances[to] += amount;
+        totalSupply += amount;
     }
-    
-    function withdraw(uint256 amount) public {
+
+    function transfer(address to, uint256 amount) public {
         require(balances[msg.sender] >= amount, "Insufficient balance");
-        
-        (bool success, ) = msg.sender.call{value: amount}("");
-        require(success, "Transfer failed");
-        
-        balances[msg.sender] -= amount; // State change after external call - REENTRANCY
+        balances[msg.sender] -= amount;
+        balances[to] += amount;
     }
 }
 """
+# This contract is vulnerable to **integer overflow/underflow** because Solidity 0.6.x does NOT have built-in overflow checks.
+# If your LLM is correct, it should mention "integer overflow", "arithmetic overflow", or "lack of SafeMath" as the vulnerability.
 
-# Create test prompt
+
 messages = [
-    {"role": "user", "content": f"Analyze this Solidity smart contract for security vulnerabilities:\n\n```solidity\n{test_code}\n```"}
+    {
+        "role": "user",
+        "content": (
+            "You are a Solidity smart contract auditor. "
+            "Your task is to find, solve, and clearly explain any security vulnerabilities or logic problems in the following Solidity code. "
+            "For each issue you find, provide:\n"
+            "1. The vulnerability/problem name\n"
+            "2. An explanation of why it is a problem\n"
+            "3. A suggested fix or mitigation\n\n"
+            "Analyze this Solidity code:\n\n"
+            "```solidity\n"
+            f"{test_code}\n"
+            "```\n"
+            "List all vulnerabilities and provide detailed explanations and solutions."
+        )
+    }
 ]
 
 inputs = tokenizer.apply_chat_template(
@@ -266,21 +269,19 @@ inputs = tokenizer.apply_chat_template(
     return_tensors="pt"
 ).to(model.device)
 
-print("Generating response with fine-tuned model...")
+print("Generating response with fine-tuned model.")
 with torch.no_grad():
     outputs = model.generate(
         **inputs,
-        max_new_tokens=256,     # Reasonable for 4GB VRAM
-        temperature=0.7,        # Slightly higher for diversity
+        max_new_tokens=500,
+        temperature=0.3,
         do_sample=True,
         top_p=0.9,
-        repetition_penalty=1.1, # Reduce repetition
         pad_token_id=tokenizer.eos_token_id
     )
 
 response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[-1]:], skip_special_tokens=True)
 print("Fine-tuned model response:")
 print(response)
-
-print("\n" + "="*50)
-print("Training and testing completed successfully!")
+print("=========================================")
+print("It should mention integer overflow, arithmetic overflow, or lack of SafeMath as the vulnerability.")
